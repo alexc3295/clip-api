@@ -1,0 +1,7 @@
+fastapi
+uvicorn
+pydantic
+requests
+Pillow
+torch
+git+https://github.com/openai/CLIP.git
