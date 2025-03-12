@@ -52,7 +52,7 @@ def process_images(urls):
             response.raise_for_status()
             image = Image.open(BytesIO(response.content)).convert("RGB")
             # Resize the image to a lower resolution (e.g., 224x224) to reduce memory usage.
-            image = image.resize((224, 224))
+            image = image.resize((192, 192))
             # Preprocess image and convert to half precision.
             image_input = preprocess(image).unsqueeze(0).to(device).half()
             with torch.no_grad():
