@@ -10,33 +10,29 @@ import logging
 
 app = FastAPI()
 
-# In-memory store for job results.
+# In-memory storage for job results.
 job_results = {}
 
-# Request model for incoming image URLs.
+# Request model for image URLs.
 class ImageURLs(BaseModel):
     urls: list[str]
 
-# Global variables for the CLIP model, preprocessing, and device.
+# Global variables for the model, preprocessing, and device.
 model = None
 preprocess = None
 device = None
 
-# Startup event: load the heavy CLIP model.
 @app.on_event("startup")
 async def startup_event():
     global model, preprocess, device
+    # Use 'mps' if available (for Apple Silicon), otherwise use CPU.
     device = "mps" if torch.backends.mps.is_available() else "cpu"
-    logging.info(f"Loading CLIP model on device: {device} ...")
+    logging.info(f"Loading CLIP model on device: {device}...")
     model, preprocess = clip.load("ViT-B/32", device=device)
-    logging.info("CLIP model loaded successfully.")
+    # Convert the model to half precision to save memory.
+    model = model.half()
+    logging.info("CLIP model loaded and converted to half precision successfully.")
 
-# Simple health-check endpoint.
-@app.get("/health")
-def health():
-    return {"status": "ok"}
-
-# Function to process images and rank them.
 def process_images(urls):
     # Define text prompts describing a captivating real estate photo.
     prompts = [
@@ -48,32 +44,40 @@ def process_images(urls):
     with torch.no_grad():
         text_features = model.encode_text(text_tokens)
         text_features /= text_features.norm(dim=-1, keepdim=True)
+    
     scored = []
     for url in urls:
         try:
             response = requests.get(url, timeout=10)
             response.raise_for_status()
             image = Image.open(BytesIO(response.content)).convert("RGB")
-            image_input = preprocess(image).unsqueeze(0).to(device)
+            # Resize the image to a lower resolution (e.g., 224x224) to reduce memory usage.
+            image = image.resize((224, 224))
+            # Preprocess image and convert to half precision.
+            image_input = preprocess(image).unsqueeze(0).to(device).half()
             with torch.no_grad():
                 image_features = model.encode_image(image_input)
                 image_features /= image_features.norm(dim=-1, keepdim=True)
+                # Compute similarity with text prompts.
                 similarity = (100.0 * image_features @ text_features.T).softmax(dim=-1)
                 best_score = similarity[0].max().item()
             scored.append((url, best_score))
         except Exception as e:
             logging.error(f"Error processing {url}: {e}")
             scored.append((url, 0.0))
+    
     scored.sort(key=lambda x: x[1], reverse=True)
     top8 = [url for url, score in scored[:8]]
     return top8
 
-# Background task that runs the ranking job.
 def run_ranking_job(job_id: str, urls: list[str]):
     result = process_images(urls)
     job_results[job_id] = result
 
-# Endpoint to start ranking images.
+@app.get("/health")
+def health():
+    return {"status": "ok"}
+
 @app.post("/start-ranking")
 def start_ranking(data: ImageURLs, background_tasks: BackgroundTasks):
     if not data.urls:
@@ -82,7 +86,6 @@ def start_ranking(data: ImageURLs, background_tasks: BackgroundTasks):
     background_tasks.add_task(run_ranking_job, job_id, data.urls)
     return {"job_id": job_id, "status": "processing"}
 
-# Endpoint to retrieve the results for a given job.
 @app.get("/job-result/{job_id}")
 def get_job_result(job_id: str):
     if job_id not in job_results:
@@ -91,4 +94,4 @@ def get_job_result(job_id: str):
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="127.0.0.1", port=8000, reload=True)
+    uvicorn.run(app, host="0.0.0.0", port=8000, reload=True)
